@@ -1,0 +1,8 @@
+kafka:
+  brokers:
+    - localhost:9092
+  topic: experimental
+  group: kc.local
+  poll-ms: 1000
+  parameters:
+    session.timeout.ms: 10000
