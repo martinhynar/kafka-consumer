@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -15,11 +16,12 @@ import (
 
 type Config struct {
 	Kafka struct {
-		Brokers    []string               `yaml:"brokers"`
-		Topic      string                 `yaml:"topic"`
-		Group      string                 `yaml:"group"`
-		PollMs     int                    `yaml:"poll-ms"`
-		Parameters map[string]interface{} `yaml:"parameters"`
+		Brokers          []string               `yaml:"brokers"`
+		Topic            string                 `yaml:"topic"`
+		Group            string                 `yaml:"group"`
+		StartTimestampMs int64                  `yaml:"start-timestamp-ms"`
+		PollMs           int                    `yaml:"poll-ms"`
+		Parameters       map[string]interface{} `yaml:"parameters"`
 	}
 }
 
@@ -29,7 +31,6 @@ var (
 )
 
 func main() {
-
 	// os.Exit(0)
 	configFile := "config.yaml"
 	if len(os.Args) == 2 {
@@ -45,10 +46,12 @@ func main() {
 
 	// Create Kafka Client
 	kafkaConsumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers":    strings.Join(config.Kafka.Brokers, ","),
-		"group.id":             config.Kafka.Group,
-		"session.timeout.ms":   config.Kafka.Parameters["session.timeout.ms"],
-		"default.topic.config": kafka.ConfigMap{"auto.offset.reset": "earliest"}})
+		"bootstrap.servers":               strings.Join(config.Kafka.Brokers, ","),
+		"group.id":                        config.Kafka.Group,
+		"session.timeout.ms":              config.Kafka.Parameters["session.timeout.ms"],
+		"default.topic.config":            kafka.ConfigMap{"auto.offset.reset": "latest"},
+		"go.application.rebalance.enable": true,
+		"go.events.channel.enable":        true})
 
 	if err != nil {
 		errlogger.Printf("Failed to create consumer: %s\n", err)
@@ -59,22 +62,8 @@ func main() {
 		kafkaConsumer.Close()
 	}()
 
-	err = kafkaConsumer.SubscribeTopics([]string{config.Kafka.Topic}, nil)
-	timeoutMs := 1000
-	var januaryfirst2018 kafka.Offset = 1514761200000
-	offsets, err := kafkaConsumer.OffsetsForTimes([]kafka.TopicPartition{{Topic: &config.Kafka.Topic, Partition: 0, Offset: januaryfirst2018}}, timeoutMs)
-	if err != nil {
-		errlogger.Printf("Timestamp offset search error: %v\n", err)
-	} else {
-		for _, offset := range offsets {
-			logger.Printf("Partition seek: %s[%d]->%v\n", *offset.Topic, offset.Partition, offset.Offset)
+	err = kafkaConsumer.Subscribe(config.Kafka.Topic, nil)
 
-			err = kafkaConsumer.Seek(offset, timeoutMs)
-			if err != nil {
-				errlogger.Printf("Partition seek error: %v\n", err)
-			}
-		}
-	}
 	run := true
 
 	for run == true {
@@ -89,15 +78,45 @@ func main() {
 			}
 
 			switch e := ev.(type) {
+			case kafka.AssignedPartitions:
+				logger.Println("Partitions assigned")
+				for _, ap := range e.Partitions {
+					logger.Printf("%s[%d]@%v", ap.Topic, ap.Partition, ap.Offset)
+				}
+				kafkaConsumer.Assign(e.Partitions)
+
+				var start kafka.Offset = kafka.Offset(config.Kafka.StartTimestampMs)
+				var searchTP []kafka.TopicPartition = make([]kafka.TopicPartition, len(e.Partitions))
+				for i, ap := range e.Partitions {
+					searchTP[i] = kafka.TopicPartition{Topic: &config.Kafka.Topic, Partition: ap.Partition, Offset: start}
+				}
+				timeoutMs := 5000
+				rewindTP, err := kafkaConsumer.OffsetsForTimes(searchTP, timeoutMs)
+				if err != nil {
+					errlogger.Printf("Timestamp offset search error: %v\n", err)
+				} else {
+					err = kafkaConsumer.Assign(rewindTP)
+					logger.Println("Partition re-assignment")
+					for _, ap := range rewindTP {
+						logger.Printf("%s[%d]@%v", ap.Topic, ap.Partition, ap.Offset)
+					}
+					if err != nil {
+						errlogger.Printf("Partition assignment error: %v\n", err)
+					}
+				}
+			case kafka.RevokedPartitions:
+				logger.Printf("%% %v\n", e)
+				kafkaConsumer.Unassign()
+
 			case *kafka.Message:
-				logger.Printf("RECEIVED: @%d %s\n", milliseconds(&e.Timestamp), string(e.Value))
+				logger.Printf("kafka@%d : %s", milliseconds(&e.Timestamp), string(e.Value))
 			case kafka.PartitionEOF:
 				logger.Printf("%% Reached %v\n", e)
 			case kafka.Error:
 				errlogger.Printf("%% Error: %v\n", e)
 				run = false
 			default:
-				// fmt.Printf("Ignored %v\n", e)
+				fmt.Printf("Ignored %v\n", e)
 			}
 		}
 	}

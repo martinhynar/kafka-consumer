@@ -3,6 +3,7 @@ kafka:
     - localhost:9092
   topic: experimental
   group: kc.local
+  start-timestamp-ms: 1517353200000
   poll-ms: 1000
   parameters:
     session.timeout.ms: 10000
