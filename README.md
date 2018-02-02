@@ -14,4 +14,4 @@ kafka-topics \
 ```
 + Run `go run kafka-consumer.go`
 
-The client will subscribe to `experimental` topic and will try to find topics after January 1st, 2018. Then it will seek to the position. This means, all records after this moment will be read. Practically, it will seek to offset 0, but not directly but by calling `OffsetsForTimes` function.
+The client will subscribe to `experimental` topic and will try to find topics after given timestamp (in configuration `start-timestamp-ms`). Then it will rewind to the position. This means, all records after this moment will be read.
